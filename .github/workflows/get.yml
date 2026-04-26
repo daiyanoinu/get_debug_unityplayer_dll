@@ -1,8 +1,11 @@
-name: Extract Unity Debug DLL
+name: Extract Unity DLL
 
 on:
-  workflow_dispatch: # 手动触发
-
+  workflow_dispatch:
+    inputs:
+      download_url:
+        description: '请输入 Unity .pkg 下载链接'
+        required: true
 jobs:
   extract:
     runs-on: ubuntu-latest
@@ -14,33 +17,46 @@ jobs:
       - name: Install Extraction Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y xar libxml2-utils cprio
+          sudo apt-get install -y xar libxml2-utils cpio
 
       - name: Download Unity Package
         run: |
-          curl -L "https://download.unity3d.com/download_unity/dd0c98481d00/MacEditorTargetInstaller/UnitySetup-Windows-Mono-Support-for-Editor-2022.3.56f1.pkg" -o unity_setup.pkg
+          # 使用 ${{ github.event.inputs.download_url }} 获取你输入的链接
+          curl -L "${{ github.event.inputs.download_url }}" -o unity_setup.pkg
 
       - name: Unpack PKG
         run: |
-          # 1. 使用 xar 提取 pkg 内容
+          # 1. 提取 pkg 外壳
           xar -xf unity_setup.pkg -C .
           
-          # 2. 找到 Payload 文件（通常是实际的数据压缩包）
-          # 注意：pkg 内部结构可能有嵌套，这里假设在 Payload 路径下
-          find . -name "Payload" -exec mkdir -p extracted_payload \; -exec tar -C extracted_payload -xvf {} + || true
+          # 2. 这里的逻辑做了增强：
+          # 遍历所有找到的 Payload 文件，并尝试解压
+          # 因为 Unity 的 pkg 结构中，DLL 可能嵌套在多个 Payload 里的不同子目录下
+          mkdir -p extracted_content
+          find . -name "Payload" | while read payload; do
+            echo "Extracting $payload..."
+            # Unity 的 Payload 通常是 cpio 格式，或者是经过 gzip 压缩的 cpio
+            cat "$payload" | (gunzip -c 2>/dev/null || cat) | cpio -idm -D ./extracted_content || true
+          done
 
-      - name: Locate and Organize DLL
+      - name: Find Debug UnityPlayer.dll
         run: |
           mkdir -p output
-          # 搜索所有 UnityPlayer.dll，包括 Debug 目录下的
-          find . -name "UnityPlayer.dll" -exec cp {} ./output/ \;
+          # 专门寻找 win64_development_mono 路径下的 DLL，这通常是 Debug 版本
+          # 如果路径匹配不到，则备份搜索所有的 UnityPlayer.dll
+          find ./extracted_content -path "*/win64_development_mono/*UnityPlayer.dll" -exec cp {} ./output/development_UnityPlayer.dll \;
           
-          # 如果确认为 Debug 版本，通常在特定路径下，可以重命名以便识别
-          echo "Found DLLs:"
+          # 如果上面没找到，就把所有搜到的都拷出来并加上目录名后缀防止覆盖
+          find ./extracted_content -name "UnityPlayer.dll" -not -path "*/win64_development_mono/*" | while read dll; do
+            folder_name=$(basename $(dirname $dll))
+            cp "$dll" "./output/${folder_name}_UnityPlayer.dll"
+          done
+
+          echo "提取结果列表："
           ls -R ./output/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UnityPlayer-DLLs
+          name: Unity-DLL-Output
           path: output/
