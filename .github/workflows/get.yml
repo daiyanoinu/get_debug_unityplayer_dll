@@ -1,0 +1,46 @@
+name: Extract Unity Debug DLL
+
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Extraction Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xar libxml2-utils cprio
+
+      - name: Download Unity Package
+        run: |
+          curl -L "https://download.unity3d.com/download_unity/dd0c98481d00/MacEditorTargetInstaller/UnitySetup-Windows-Mono-Support-for-Editor-2022.3.56f1.pkg" -o unity_setup.pkg
+
+      - name: Unpack PKG
+        run: |
+          # 1. 使用 xar 提取 pkg 内容
+          xar -xf unity_setup.pkg -C .
+          
+          # 2. 找到 Payload 文件（通常是实际的数据压缩包）
+          # 注意：pkg 内部结构可能有嵌套，这里假设在 Payload 路径下
+          find . -name "Payload" -exec mkdir -p extracted_payload \; -exec tar -C extracted_payload -xvf {} + || true
+
+      - name: Locate and Organize DLL
+        run: |
+          mkdir -p output
+          # 搜索所有 UnityPlayer.dll，包括 Debug 目录下的
+          find . -name "UnityPlayer.dll" -exec cp {} ./output/ \;
+          
+          # 如果确认为 Debug 版本，通常在特定路径下，可以重命名以便识别
+          echo "Found DLLs:"
+          ls -R ./output/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnityPlayer-DLLs
+          path: output/
