@@ -1,10 +1,10 @@
-name: Extract Unity DLL (Deep Scan)
+name: Extract Unity DLL (Strict Mode)
 
 on:
   workflow_dispatch:
     inputs:
       download_url:
-        description: '请输入 Unity .pkg 下载链接'
+        description: 'Unity .pkg 链接'
         required: true
         default: 'https://download.unity3d.com/download_unity/dd0c98481d00/MacEditorTargetInstaller/UnitySetup-Windows-Mono-Support-for-Editor-2022.3.56f1.pkg'
 
@@ -24,45 +24,52 @@ jobs:
       - name: Download
         run: curl -L "${{ github.event.inputs.download_url }}" -o unity_setup.pkg
 
-      - name: Unpack Strategy
+      - name: Unpack Payload
         run: |
           mkdir -p raw_unpacked
-          # 1. 解开 XAR 外壳
-          7z x unity_setup.pkg -oraw_unpacked
+          # 1. 强力解开 XAR (pkg)
+          7z x unity_setup.pkg -oraw_unpacked -y
           
           mkdir -p deep_content
-          # 2. 深度搜索所有 Payload 文件并强制解压
+          # 2. 找到所有 Payload（无论是在 .tmp 还是其他目录下）
+          echo "Scanning for Payloads..."
           find raw_unpacked -name "Payload" | while read payload; do
-            echo "Processing Payload: $payload"
-            # 尝试多种解压方式：直接 cpio 或 先 gunzip 再 cpio
-            (cd deep_content && cat "../$payload" | (gunzip -c 2>/dev/null || cat) | cpio -idm 2>/dev/null || true)
+            echo "Found Payload at: $payload"
+            # 这里的逻辑：先用 7z 尝试解压（因为你的日志显示 7z 能识别里面的 gzip 类型）
+            # 如果 7z 失败，再用 cpio 兜底
+            7z x "$payload" -so | (cd deep_content && cpio -idm 2>/dev/null || true)
           done
 
       - name: Collect Results
         run: |
           mkdir -p output
           
-          # 打印一下找到的文件结构，方便调试
-          echo "Scanning for UnityPlayer.dll..."
-          find deep_content -name "UnityPlayer.dll"
-          
-          # 搜索所有位置并拷贝
-          # 我们重点找包含 'win64' 且包含 'development' 的路径
+          echo "--- 正在全盘搜索 UnityPlayer.dll ---"
+          # 使用递归搜索，无视目录深度
           find deep_content -name "UnityPlayer.dll" | while read dll; do
-            full_path="$dll"
-            # 根据路径特征命名
-            if [[ "$full_path" == *"development"* ]]; then
-               cp "$full_path" "./output/Debug_UnityPlayer.dll"
-               echo "Found Debug DLL: $full_path"
-            elif [[ "$full_path" == *"release"* ]]; then
-               cp "$full_path" "./output/Release_UnityPlayer.dll"
-               echo "Found Release DLL: $full_path"
+            echo "Found: $dll"
+            
+            # 获取路径名，用于区分版本
+            # 典型的路径包含: win64_development_mono 或 win64_release_mono
+            if [[ "$dll" == *"development"* ]]; then
+              cp "$dll" "./output/Debug_UnityPlayer.dll"
+              echo ">> Saved as Debug_UnityPlayer.dll"
+            elif [[ "$dll" == *"release"* ]]; then
+              cp "$dll" "./output/Release_UnityPlayer.dll"
+              echo ">> Saved as Release_UnityPlayer.dll"
             else
-               # 兜底命名：用倒数第二级目录名
-               suffix=$(basename $(dirname "$full_path"))
-               cp "$full_path" "./output/${suffix}_UnityPlayer.dll"
+              # 如果没有明显特征，用文件夹名区分
+              unique_name=$(basename $(dirname "$dll"))
+              cp "$dll" "./output/${unique_name}_UnityPlayer.dll"
+              echo ">> Saved as ${unique_name}_UnityPlayer.dll"
             fi
           done
+
+          # 检查 output 是否为空
+          if [ -z "$(ls -A output)" ]; then
+            echo "错误：未能在解压后的内容中找到 UnityPlayer.dll"
+            exit 1
+          fi
 
       - name: Upload
         uses: actions/upload-artifact@v4
